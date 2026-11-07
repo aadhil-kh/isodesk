@@ -63,7 +63,11 @@ The first time the server starts, `plugins/isodesk/scripts/launch.py` builds a
 private venv under the host's data directory for the plugin (for Claude Code,
 `~/.claude/plugins/data/isodesk-isodesk/`) and installs the exact dependency
 set pinned in `plugins/isodesk/server/requirements.lock`. That takes about a
-minute, once. Later starts reuse the venv, plugin updates that only change
+minute, once, which is longer than clients wait for a server to start, so on
+that first start isodesk reports that it is still installing and fails to
+connect. The install carries on in the background; reconnect it a minute later
+(`/mcp` in Claude Code) or start a new session. Later starts reuse the venv,
+plugin updates that only change
 isodesk's code reuse it too, and a change to the lock file or to the system
 Python builds a new one. To build it ahead of time, or to see install errors
 directly:

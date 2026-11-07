@@ -13,7 +13,13 @@ Standard library only, and nothing may reach stdout except the server itself:
 stdout is the MCP channel. Everything here writes to stderr or install.log.
 
     python launch.py              # run the MCP server (what .mcp.json and mcp.json do)
-    python launch.py --prepare    # build the venv now and exit
+    python launch.py --prepare    # build the venv now, in the foreground, and exit
+
+On a first run the server cannot wait for the install: hosts give it about 30s
+to answer, and the install takes about a minute. So the install runs in a
+detached process (`--install`) that outlives the launcher, the launcher waits
+for it briefly, and if it is not done yet exits with a message saying so. The
+next connection attempt finds the venv ready.
 """
 
 from __future__ import annotations
@@ -33,7 +39,9 @@ SERVER_DIR = os.path.join(PLUGIN_ROOT, "server")
 REQUIREMENTS = os.path.join(SERVER_DIR, "requirements.lock")
 READY_MARKER = ".isodesk-ready"
 LOCK_WAIT_SECONDS = 15 * 60
-STALE_TMP_SECONDS = 60 * 60
+# Hosts give a stdio server about 30s to answer initialize, and the server
+# itself takes a few seconds to come up, so this is all the install can have.
+SERVER_WAIT_SECONDS = 20
 
 
 def log(message: str) -> None:
@@ -73,17 +81,24 @@ def is_ready(venv: str) -> bool:
 
 
 @contextmanager
-def install_lock(base: str):
-    """Serialise venv builds across processes; released by the OS if we die."""
+def install_lock(base: str, wait: bool):
+    """Serialise venv builds across processes; released by the OS if we die.
+
+    Yields False instead of waiting when `wait` is off and another process
+    already holds the lock.
+    """
     handle = open(os.path.join(base, "install.lock"), "a+")
     deadline = time.monotonic() + LOCK_WAIT_SECONDS
     waited = False
-    while True:
+    acquired = False
+    while not acquired:
         try:
             handle.seek(0)
             msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
-            break
+            acquired = True
         except OSError:
+            if not wait:
+                break
             if time.monotonic() > deadline:
                 handle.close()
                 raise SystemExit("[isodesk] timed out waiting for another install to finish")
@@ -92,10 +107,11 @@ def install_lock(base: str):
                 waited = True
             time.sleep(1)
     try:
-        yield
+        yield acquired
     finally:
-        handle.seek(0)
-        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        if acquired:
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
         handle.close()
 
 
@@ -126,47 +142,63 @@ def rename_with_retry(src: str, dst: str) -> None:
 
 
 def prune(base: str, keep: str) -> None:
-    now = time.time()
+    # Runs only under the install lock, so no other build is in progress here.
     for name in os.listdir(base):
         path = os.path.join(base, name)
-        if not name.startswith("venv-") or path == keep or not os.path.isdir(path):
-            continue
-        # A .tmp dir may belong to an install a killed launcher left running.
-        if ".tmp" in name and now - os.path.getmtime(path) < STALE_TMP_SECONDS:
-            continue
-        # A server from the previous version may still hold files open here;
-        # whatever is left goes on a later run.
-        shutil.rmtree(path, ignore_errors=True)
+        if name.startswith("venv-") and path != keep and os.path.isdir(path):
+            # A server from the previous version may still hold files open
+            # here; whatever is left goes on a later run.
+            shutil.rmtree(path, ignore_errors=True)
 
 
-def ensure_venv() -> str:
-    base = data_dir()
-    venv = os.path.join(base, f"venv-{env_key()}")
-    if is_ready(venv):
-        return venv
-    with install_lock(base):
-        if is_ready(venv):
-            return venv
-        log_path = os.path.join(base, "install.log")
-        log(f"installing isodesk dependencies into {venv} (first run takes about a minute; log: {log_path})")
-        started = time.monotonic()
-        # Build under a temporary name and rename at the end, so a venv that
-        # exists is always complete even if this process is killed midway.
-        tmp = f"{venv}.tmp{os.getpid()}"
-        shutil.rmtree(tmp, ignore_errors=True)
-        run_logged([sys.executable, "-m", "venv", tmp], log_path)
-        run_logged(
-            [venv_python(tmp), "-m", "pip", "install", "--disable-pip-version-check",
-             "--no-input", "-r", REQUIREMENTS],
-            log_path,
-        )
-        with open(os.path.join(tmp, READY_MARKER), "w", encoding="utf-8") as marker:
-            marker.write(f"{sys.version}\n{REQUIREMENTS}\n")
-        shutil.rmtree(venv, ignore_errors=True)
-        rename_with_retry(tmp, venv)
-        log(f"dependencies ready in {time.monotonic() - started:.0f}s")
-        prune(base, keep=venv)
-    return venv
+def build(base: str, venv: str) -> None:
+    """Build the venv; the caller holds the install lock.
+
+    The build happens under a fixed temporary name and is renamed at the end,
+    so a venv that exists is always complete. If a build is cut short, the next
+    one reuses the half-built venv and pip skips what it already installed.
+    """
+    log_path = os.path.join(base, "install.log")
+    log(f"installing isodesk dependencies into {venv} (log: {log_path})")
+    started = time.monotonic()
+    staging = f"{venv}.building"
+    if not os.path.isfile(venv_python(staging)):
+        shutil.rmtree(staging, ignore_errors=True)
+        run_logged([sys.executable, "-m", "venv", staging], log_path)
+    run_logged(
+        [venv_python(staging), "-m", "pip", "install", "--disable-pip-version-check",
+         "--no-input", "-r", REQUIREMENTS],
+        log_path,
+    )
+    with open(os.path.join(staging, READY_MARKER), "w", encoding="utf-8") as marker:
+        marker.write(f"{sys.version}\n{REQUIREMENTS}\n")
+    shutil.rmtree(venv, ignore_errors=True)
+    rename_with_retry(staging, venv)
+    log(f"dependencies ready in {time.monotonic() - started:.0f}s")
+    prune(base, keep=venv)
+
+
+def install(base: str, venv: str, wait: bool) -> None:
+    with install_lock(base, wait) as acquired:
+        if acquired and not is_ready(venv):
+            build(base, venv)
+
+
+def start_background_install() -> None:
+    """Run the install in its own process, so it outlives this launcher.
+
+    A host that times out waiting for the server kills the launcher; an install
+    running inside it would die with it and start over on every retry.
+    """
+    flags = subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP
+    cmd = [sys.executable, os.path.abspath(__file__), "--install"]
+    io = dict(stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True)
+    try:
+        # Leave the host's job object too, in case it kills the whole tree.
+        subprocess.Popen(cmd, creationflags=flags | subprocess.CREATE_BREAKAWAY_FROM_JOB, **io)
+    except OSError:
+        # The job does not allow breakaway, so it does not kill on close either.
+        subprocess.Popen(cmd, creationflags=flags, **io)
 
 
 def main() -> int:
@@ -178,10 +210,30 @@ def main() -> int:
             f"'python' is {sys.version.split()[0]} at {sys.executable}")
         return 1
 
-    venv = ensure_venv()
-    if "--prepare" in sys.argv[1:]:
+    base = data_dir()
+    venv = os.path.join(base, f"venv-{env_key()}")
+    args = sys.argv[1:]
+    if "--install" in args:
+        # The background install; exits at once if another one is running.
+        install(base, venv, wait=False)
+        return 0
+    if "--prepare" in args:
+        install(base, venv, wait=True)
         log(f"ready: {venv_python(venv)}")
         return 0
+
+    if not is_ready(venv):
+        start_background_install()
+        deadline = time.monotonic() + SERVER_WAIT_SECONDS
+        while not is_ready(venv) and time.monotonic() < deadline:
+            time.sleep(0.5)
+        if not is_ready(venv):
+            log("isodesk is still installing its dependencies (first run, about a minute). "
+                "The install carries on in the background: reconnect isodesk in a minute "
+                "(/mcp in Claude Code) or start a new session. Progress and errors: "
+                f"{os.path.join(base, 'install.log')}; to install in the foreground, run "
+                f"python \"{os.path.abspath(__file__)}\" --prepare")
+            return 1
 
     env = dict(os.environ)
     env["PYTHONPATH"] = os.pathsep.join(p for p in (SERVER_DIR, env.get("PYTHONPATH")) if p)
