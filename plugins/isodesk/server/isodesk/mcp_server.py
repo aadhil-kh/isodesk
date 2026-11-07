@@ -89,7 +89,9 @@ def _cleanup() -> None:
         pass
 
 
-def _call(session_id: str, method: str, **params) -> Dict[str, Any]:
+def _call(session_id: str, method: str, /, **params) -> Dict[str, Any]:
+    # Positional-only for the reason Session.call is: click_xy has a parameter
+    # called `method`, and a plain `method` here collided with it on every call.
     try:
         return manager.get(session_id).call(method, **params)
     except SessionError as exc:

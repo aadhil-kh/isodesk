@@ -102,6 +102,14 @@ superseded listing is refused instead of resolving against whatever now holds th
 position. Do that whenever more than one listing has happened — it converts the sharpest
 failure mode here into an error message.
 
+**Within its listing, an id means one element.** It resolves by the element's UIA
+RuntimeId, so controls that share a name and type — two unnamed TextBoxes, two
+"Source code" expanders, XML Hub's two Monaco editors — are kept apart, and an edit box
+whose name is its own content still resolves after `set_text` changes it. Only when the
+element itself is gone does an id fall back to name, type and AutomationId, and only if
+exactly one live control matches; when several do, the call fails (or `refresh_controls`
+answers `STALE … several live controls match`) instead of guessing.
+
 **The default listing drops unnamed controls.** `include_unnamed=false` (default) discards
 anything with neither a name nor an AutomationId. Two very common casualties:
 
@@ -142,9 +150,12 @@ wrong semantic on a control that supports several.
   expanders, tree items and combo boxes.
 - **Read the `method` field in every response.** It names the pattern that actually fired.
   A verb that "worked" via an unexpected pattern usually did something else.
-- `set_text` falls back from `ValuePattern` to `type_keys`. `ValuePattern` is atomic and
-  trustworthy; a `type_keys` result on a background desktop is not — re-read the value
-  before continuing.
+- `set_text` falls back from `ValuePattern` to `type_keys`, and reads the value back
+  either way: `verified: true` means the control now holds the text. `verified: false`
+  comes with a `warning` saying what it reads instead. Web content is the usual cause:
+  Monaco in WebView2 accepts a `ValuePattern` write, ignores it, and reads back empty, so
+  a Monaco editor can be neither written nor read here. A read-only box is refused by
+  name.
 - **A pattern that fires is not the user gesture.** Setting an AutoSuggestBox's text and
   selecting a suggestion does both of those things and still submits nothing: there is no
   Enter to press, and `QuerySubmitted` never runs. Navigate through the real tree (nav
@@ -166,8 +177,10 @@ changes things *below* your next target leaves that target's id valid. Collapsin
 expanded groups is therefore cheapest bottom-up: collapse the last group first and the ids
 above it still hold. Every action response echoes back the control it resolved — check that
 name is the one you meant, and you have the confirmation that makes this safe. The echoed
-row carries the control's state as read *after* the action, with `state_before` beside it,
-so a toggle or an expand needs no follow-up `refresh_controls` to confirm.
+row carries the control's state and rect as read *after* the action, with `state_before`
+beside it, so a toggle or an expand needs no follow-up `refresh_controls` to confirm. The
+rect may still be mid-layout straight after an expand or collapse; `measure` a moment
+later if the geometry is the question.
 
 ## Dead ends — things that cannot be driven at all
 
@@ -276,6 +289,9 @@ no ambiguous branch:
 | No popup window, but the parent's `get_controls` now carries the flyout's items | Hosted in-frame | Work in the parent's listing — and the parent's own capture *does* show it |
 | No popup window and nothing new in the parent | It genuinely did not open | Reach the command another way |
 
+A classic Win32 ComboBox (WinForms, or an app like Character Map) is the second row: its
+list opens inside the window, so scope a listing to the combo's id to read the items.
+
 Opening one is its own question. `expand_control` reliably opens a ComboBox drop-down.
 A `Button.Flyout` may not open under UIA Invoke at all — so run the three-way test rather
 than re-invoking, and only conclude "broken flyout" on the third row.
@@ -377,6 +393,6 @@ you hit this, read `references/deploy-refresh.md` for the full recipe.
 | Tools start failing with rect/DC errors mid-run | The app process died. `screenshot` now says so outright; confirm with `list_windows` (empty) and relaunch. |
 | "pipe desynchronized" or a call timing out | A previous call was abandoned while the worker was still busy. Retry; if it repeats, destroy the session. |
 | A build or file copy blocks for minutes | An app is holding the binaries — a live session, or an orphaned desktop from a dead host. `session_list(include_orphans=true)` then `session_reap`. |
-| `set_text` did not stick | Id went stale between listing and call, or the result came from `type_keys`. Re-list, re-set, re-read. |
+| `set_text` did not stick | The response says `verified: false` and what the control reads instead. On web content (Monaco) that is expected and cannot be worked around here; otherwise re-list, re-set, re-read. |
 | A second launch attaches to an existing instance | Single-instance app (e.g. Windows 11 Notepad) handed off to a copy on the host desktop. Teardown will not kill it — that is deliberate. |
 | `session_activate_app` says the app "opened on the user's desktop" | A UWP app with a CoreWindow (e.g. Calculator): Windows frames it in ApplicationFrameHost on the user's desktop, so it cannot be isolated. The instance the call started was closed again. Use `winapp ui` for it. |

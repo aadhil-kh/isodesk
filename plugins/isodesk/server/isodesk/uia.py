@@ -11,6 +11,7 @@ pure layout containers, which otherwise dominate a XAML tree.
 
 from __future__ import annotations
 
+import time
 from typing import Any, Dict, List, Optional
 
 # Control types worth showing an agent. A WinUI 3 tree is mostly Panes, Groups
@@ -315,9 +316,20 @@ def descendants(element) -> List[Any]:
             if key in seen:
                 continue
             seen.add(key)
-        found.append(UIAWrapper(UIAElementInfo(raw)))
+        wrapper = UIAWrapper(UIAElementInfo(raw))
+        # Kept on the wrapper so resolving an id against this walk does not read
+        # every RuntimeId a second time.
+        wrapper._isodesk_rid = key
+        found.append(wrapper)
         stack.extend(reversed(_raw_children(walker, raw)))
     return found
+
+
+def runtime_id_of(element) -> Optional[tuple]:
+    key = getattr(element, "_isodesk_rid", None)
+    if key is None:
+        key = _runtime_id(element.element_info.element)
+    return key
 
 
 def _rect_of(element) -> Optional[Dict[str, int]]:
@@ -359,6 +371,8 @@ def describe(
         "rect": rect,
         "enabled": _safe(element.is_enabled),
         "visible": _safe(element.is_visible),
+        # What an id resolves by; see `_find_live`. Not rendered in listings.
+        "runtime_id": runtime_id_of(element),
     }
 
     if dpi_scale and rect:
@@ -599,8 +613,18 @@ def is_caption_button(described: Dict[str, Any]) -> bool:
     the automation_id keeps the guard conservative in the direction that matters:
     a frame button that somehow lacked its automation_id is still caught, so the
     tool never invokes a real Close by accident.
+
+    What an automation_id may say is still checked: a classic Win32 ComboBox's
+    drop-down arrow is also a class-less Button named "Close" (Character Map's
+    font box), with automation_id "DropDown", and refusing it blocked the ordinary
+    way to close the list. A frame button's id is empty or the caption verb.
     """
-    return described.get("name") in CAPTION_CONTROLS and not described.get("class_name")
+    automation_id = described.get("automation_id")
+    return (
+        described.get("name") in CAPTION_CONTROLS
+        and not described.get("class_name")
+        and (not automation_id or automation_id in CAPTION_CONTROLS)
+    )
 
 
 def scroll_interface(element):
@@ -745,12 +769,65 @@ def _contained_in_actionable(rect: Optional[Dict[str, int]], existing: List[Dict
     return False
 
 
+class Ambiguous(UiaError):
+    """A row's control is gone and several live controls match its description."""
+
+
+def _identity(element) -> tuple:
+    """Name, control type and AutomationId: the fallback key for a listing row."""
+    info = getattr(element, "element_info", None)
+    return (
+        _safe(element.window_text, ""),
+        getattr(info, "control_type", None),
+        getattr(info, "automation_id", None),
+    )
+
+
+def _find_live(elements: List[Any], target: Dict[str, Any]):
+    """The live element a listing row addresses, or None when it is gone.
+
+    RuntimeId first. Matching on (name, control_type, automation_id) alone, as
+    this used to, sent every control sharing that triple to the first one: the
+    second of two unnamed TextBoxes, the second "Source code" Expander, the
+    output editor of XML Hub's two Monaco editors. The action ran on the wrong
+    control and the echo still showed the row that was asked for. It also lost
+    any control whose name is its content, such as a RichEdit after `set_text`.
+
+    The triple is still the fallback, for an element the app recreated with a
+    new RuntimeId, but only when exactly one live control matches it. When
+    several do, there is no telling which one the row meant, so `Ambiguous`
+    is raised instead of guessing.
+    """
+    rid = target.get("runtime_id")
+    if rid:
+        rid = tuple(rid)
+        for element in elements:
+            if runtime_id_of(element) == rid:
+                info = getattr(element, "element_info", None)
+                # A RuntimeId can be reused once its element is destroyed.
+                if getattr(info, "control_type", None) == target["control_type"]:
+                    return element
+                break
+
+    key = (target["name"], target["control_type"], target["automation_id"])
+    matches = [element for element in elements if _identity(element) == key]
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        raise Ambiguous(
+            f"control {target['id']!r} ({target['name'] or target['control_type']!r}) "
+            f"is no longer in the tree, and {len(matches)} live controls match its "
+            "name, type and AutomationId; re-read the control list"
+        )
+    return None
+
+
 def resolve_control(hwnd: int, control_id: str, controls: List[Dict[str, Any]]):
     """Map a snapshot id back to a live UIA element.
 
-    Re-walks the tree and matches on the recorded identity rather than trusting
-    the index, so a control that moved still resolves and one that vanished
-    fails loudly instead of acting on whatever took its place.
+    Re-walks the tree rather than trusting the index, so a control that moved
+    still resolves and one that vanished fails loudly instead of acting on
+    whatever took its place.
     """
     target = next((c for c in controls if c["id"] == control_id), None)
     if target is None:
@@ -760,29 +837,19 @@ def resolve_control(hwnd: int, control_id: str, controls: List[Dict[str, Any]]):
         )
 
     window = get_window(hwnd)
-    for element in descendants(window):
-        info = getattr(element, "element_info", None)
-        if (
-            _safe(element.window_text, "") == target["name"]
-            and getattr(info, "control_type", None) == target["control_type"]
-            and getattr(info, "automation_id", None) == target["automation_id"]
-        ):
-            return element, target
-
-    raise UiaError(
-        f"control {control_id!r} ({target['name']!r}) is no longer present; "
-        "re-read the control list"
-    )
-
-
-def _identity(element) -> tuple:
-    """The triple `resolve_control` matches on, for batch lookups."""
-    info = getattr(element, "element_info", None)
-    return (
-        _safe(element.window_text, ""),
-        getattr(info, "control_type", None),
-        getattr(info, "automation_id", None),
-    )
+    element = _find_live(descendants(window), target)
+    if element is None:
+        # A walk racing a layout change can lose a subtree to one failed COM
+        # call: seen once, as a TextBox that refresh_controls had just found and
+        # set_text then called gone. One re-walk is cheap next to a false STALE.
+        time.sleep(0.2)
+        element = _find_live(descendants(window), target)
+    if element is None:
+        raise UiaError(
+            f"control {control_id!r} ({target['name']!r}) is no longer present; "
+            "re-read the control list"
+        )
+    return element, target
 
 
 def refresh_controls(
@@ -800,8 +867,8 @@ def refresh_controls(
     cost of the walk and nothing else: each id comes back as a live row or as
     `stale`, which is the fact that actually breaks the re-listing cycle.
 
-    Identity matching is `resolve_control`'s, first match wins, so a duplicated
-    identity resolves the same way both paths do.
+    Resolution is `resolve_control`'s (`_find_live`), so both paths agree on
+    which element an id means.
     """
     known = {c["id"]: c for c in controls}
     unknown = [i for i in ids if i not in known]
@@ -820,25 +887,26 @@ def refresh_controls(
     except Exception as exc:
         raise UiaError(f"cannot enumerate controls of {hwnd}: {exc}") from exc
 
-    index: Dict[tuple, Any] = {}
-    for element in elements:
-        index.setdefault(_identity(element), element)
-
     rows: List[Dict[str, Any]] = []
     for control_id in ids:
         target = known[control_id]
-        element = index.get(
-            (target["name"], target["control_type"], target["automation_id"])
-        )
+        ambiguous = False
+        try:
+            element = _find_live(elements, target)
+        except Ambiguous:
+            element, ambiguous = None, True
         if element is None:
-            rows.append({
+            row = {
                 "id": control_id,
                 "stale": True,
                 "was": target.get("name")
                 or target.get("automation_id")
                 or target.get("xaml_type")
                 or target.get("control_type"),
-            })
+            }
+            if ambiguous:
+                row["ambiguous"] = True
+            rows.append(row)
             continue
         rows.append(
             describe(element, control_id, include_state=include_state, dpi_scale=scale)

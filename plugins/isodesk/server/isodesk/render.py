@@ -317,8 +317,12 @@ def refreshed(payload: Dict[str, Any], units: str = "dips", fmt: str = "compact"
     lines.append(" | ".join(head))
     for entry in rows:
         if entry.get("stale"):
+            note = (
+                ", and several live controls match its description"
+                if entry.get("ambiguous") else ""
+            )
             lines.append(
-                f"{entry['id']} STALE - {entry.get('was', '')} is no longer in the tree"
+                f"{entry['id']} STALE - {entry.get('was', '')} is no longer in the tree{note}"
             )
         else:
             lines.append(row(entry, units))

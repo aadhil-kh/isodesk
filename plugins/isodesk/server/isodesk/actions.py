@@ -95,6 +95,17 @@ def set_control_text(element, text: str, clear: bool = True) -> Dict[str, Any]:
     def _value_pattern():
         element.set_edit_text(text) if clear else element.type_keys(text)
 
+    # Otherwise a read-only box fails both patterns with a COMError and a
+    # SendInput count, neither of which names the cause.
+    try:
+        from .uia import _pattern
+
+        read_only = bool(_pattern(element, "Value").CurrentIsReadOnly)
+    except Exception:
+        read_only = False
+    if read_only:
+        raise ActionError("the control is read-only (ValuePattern.IsReadOnly)")
+
     return _try_patterns(
         element,
         (

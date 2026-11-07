@@ -508,6 +508,8 @@ def _element_for(state: WorkerState, hwnd: Optional[int], control_id: str,
     target = _resolve_hwnd(state, hwnd)
     controls = _controls_for(state, target, listing)
     element, described = uia.resolve_control(target, control_id, controls)
+    # The RuntimeId has done its job; it is noise in an echoed row.
+    described = {k: v for k, v in described.items() if k != "runtime_id"}
     return target, element, described
 
 
@@ -542,6 +544,16 @@ def _acted(target: int, element, described: Dict[str, Any], act) -> Dict[str, An
 
     control = {k: v for k, v in described.items() if k not in _STATE_KEYS}
     control.update(after)
+    # The geometry and name as they are now, for the same reason as the state:
+    # an expander's echo used to carry its collapsed height. Fields that no
+    # longer read (the action navigated away) keep their listed values.
+    live = uia.describe(element, described["id"], include_state=False,
+                        dpi_scale=dt.dpi_scale_for_window(target))
+    for key in ("rect", "rect_dips", "enabled", "visible"):
+        if live.get(key) is not None:
+            control[key] = live[key]
+    if live.get("name"):
+        control["name"] = live["name"]
     payload = {"hwnd": target, "control": control, **outcome}
     if before:
         payload["state_before"] = before
@@ -563,8 +575,32 @@ def h_set_text(state: WorkerState, control_id: str, text: str,
                hwnd: Optional[int] = None, clear: bool = True,
                listing: Optional[str] = None, **_) -> Dict[str, Any]:
     target, element, described = _element_for(state, hwnd, control_id, listing)
-    return _acted(target, element, described,
-                  lambda: actions.set_control_text(element, text, clear=clear))
+    payload = _acted(target, element, described,
+                     lambda: actions.set_control_text(element, text, clear=clear))
+    # A ValuePattern write can succeed and change nothing: Monaco in WebView2
+    # accepts it and still reads back "". Saying so is the difference between
+    # a no-op and a reported success.
+    value = payload["control"].get("value")
+
+    def lines(s: str) -> str:
+        # A RichEdit hands newlines back as \r and always ends in a paragraph
+        # mark, so "abc" reads back as "abc\r".
+        return s.replace("\r\n", "\n").replace("\r", "\n").rstrip("\n")
+
+    if value is None:
+        payload["verified"] = False
+        payload["warning"] = "the value could not be read back; check it with get_text"
+    elif (lines(value) != lines(text)) if clear else (lines(text) not in lines(value)):
+        payload["verified"] = False
+        payload["warning"] = f"the control reads back {value[:80]!r}, not the text that was set."
+        if text and not lines(value):
+            payload["warning"] += (
+                " Web content (Monaco, WebView2) can accept a ValuePattern write "
+                "and ignore it."
+            )
+    else:
+        payload["verified"] = True
+    return payload
 
 
 def h_toggle_control(state: WorkerState, control_id: str, hwnd: Optional[int] = None,
