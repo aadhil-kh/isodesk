@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "isodesk"
 version = "0.1.0"
 description = "Isolated Windows desktop sessions for GUI automation, exposed as an MCP server"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 license = { text = "MIT" }
 
 # Deliberately small: no agent framework and no LLM client, because the calling
@@ -16,7 +16,7 @@ dependencies = [
     "pywinauto>=0.6.8",
     "comtypes>=1.2.0",
     "Pillow>=10.0",
-    "fastmcp>=2.0",
+    "fastmcp>=3.4,<4",
     "pydantic>=2.0",
 ]
 
@@ -28,3 +28,10 @@ isodesk-mcp = "isodesk.mcp_server:main"
 
 [tool.setuptools.packages.find]
 include = ["isodesk*"]
+
+# The plugin runs this with `uv run`: uv installs uv.lock into a venv in the
+# host's plugin data directory and runs the package from this folder, so the
+# project itself is never built or installed.
+[tool.uv]
+package = false
+environments = ["sys_platform == 'win32'"]

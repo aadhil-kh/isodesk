@@ -29,8 +29,9 @@ This repository is a plugin marketplace for Claude Code, OpenAI Codex and GitHub
 Copilot CLI. The `isodesk` plugin in it carries the MCP server and the skill that
 tells the agent how to drive it.
 
-Requirements: Windows 10/11, and Python 3.10+ on `PATH` as `python`. No admin
-rights.
+Requirements: Windows 10/11 and [uv](https://docs.astral.sh/uv/) on `PATH`
+(`winget install astral-sh.uv`). uv provides Python 3.13 itself if you do not
+have it. No admin rights.
 
 **Claude Code** - the terminal, the IDE extensions and the Claude desktop app's
 **Code** tab, which all share one plugin install:
@@ -59,27 +60,11 @@ copilot plugin marketplace add aadhil-kh/isodesk
 copilot plugin install isodesk@isodesk
 ```
 
-The first time the server starts, `plugins/isodesk/scripts/launch.py` builds a
-private venv under the host's data directory for the plugin (for Claude Code,
-`~/.claude/plugins/data/isodesk-isodesk/`) and installs the exact dependency
-set pinned in `plugins/isodesk/server/requirements.lock`. That takes about a
-minute, once, which is longer than clients wait for a server to start, so on
-that first start isodesk reports that it is still installing and fails to
-connect. The install carries on in the background; a minute later, reconnect it
-by hand (in Claude Code, `/mcp`, select isodesk, **Reconnect**). Starting a new
-session is not enough: Claude Code skips a plugin server for 15 minutes after it
-fails to connect, so pre-building with `--prepare` (below) avoids the wait
-entirely. Later starts reuse the venv,
-plugin updates that only change
-isodesk's code reuse it too, and a change to the lock file or to the system
-Python builds a new one. To build it ahead of time, or to see install errors
-directly:
-
-```bash
-python ~/.claude/plugins/cache/isodesk/isodesk/<version>/scripts/launch.py --prepare
-```
-
-The install log is `install.log` in the same data directory.
+The server starts with `uv run`, which installs the exact dependency set in
+`plugins/isodesk/server/uv.lock` into a venv in the host's data directory for
+the plugin (for Claude Code, `~/.claude/plugins/data/isodesk-isodesk/venv`).
+The first start takes about ten seconds while uv fetches packages; later starts
+reuse the venv, and an update that changes the lock syncs it in place.
 
 ### Updating
 
@@ -99,10 +84,10 @@ both `plugins/isodesk/plugin.json` and `plugins/isodesk/.claude-plugin/plugin.js
 ### Other MCP clients
 
 The server itself is a plain stdio MCP server with no client-specific
-behaviour. For any other client, point it at `python
-<checkout>/plugins/isodesk/scripts/launch.py`, or install the package into an
-environment of your own with `pip install ./plugins/isodesk/server` and run
-`isodesk-mcp`.
+behaviour. For any other client, run `uv run --frozen --directory
+<checkout>/plugins/isodesk/server python -m isodesk.mcp_server`, or install the
+package into an environment of your own with `pip install ./plugins/isodesk/server`
+and run `isodesk-mcp`.
 
 ## Use as a library
 
@@ -219,10 +204,10 @@ plugins/isodesk/                     the plugin, copied as-is into users' plugin
   mcp.json                           Agent Plugins 1.0 MCP config (Codex, Copilot CLI)
   .claude-plugin/plugin.json         Claude Code manifest
   .mcp.json                          Claude Code MCP config
-  scripts/launch.py                  venv bootstrap + server launch (stdlib only)
   skills/isodesk/                    the skill
   server/isodesk/                    the Python package
-  server/requirements.lock           pinned dependency set
+  server/pyproject.toml, uv.lock     dependencies, and the exact set uv installs
+  server/.python-version             the Python uv runs it on
 tests/  spikes/                      development only; not part of the plugin
 ```
 
@@ -235,27 +220,27 @@ claude plugin install isodesk@isodesk
 claude plugin validate .
 ```
 
-For the tests and spikes, use an environment with the package installed
-editable (`pip install -e "plugins/isodesk/server[dev]"`) or the plugin's venv:
+For the tests and spikes, run them in the locked environment from the repository
+root (`uv run` builds `plugins/isodesk/server/.venv` on first use):
 
 ```bash
-python spikes/spike_desktop.py --targets notepad   # capability matrix
-python spikes/spike_input.py                       # input mechanism matrix
-python tests/smoke_e2e.py                          # full stack against the Gallery
-python tests/smoke_tuning.py                       # WinUI tuning, first cut
-python tests/smoke_popups_scroll.py                # popups, scrolling, captions
-python tests/smoke_lean_scope.py                   # lean listings, scope, measure
-python -m pytest tests/test_host_isolation.py -v   # the invariant that matters
+uv run --project plugins/isodesk/server --extra dev python spikes/spike_desktop.py --targets notepad   # capability matrix
+uv run --project plugins/isodesk/server --extra dev python spikes/spike_input.py                       # input mechanism matrix
+uv run --project plugins/isodesk/server --extra dev python tests/smoke_e2e.py                          # full stack against the Gallery
+uv run --project plugins/isodesk/server --extra dev python tests/smoke_tuning.py                       # WinUI tuning, first cut
+uv run --project plugins/isodesk/server --extra dev python tests/smoke_popups_scroll.py                # popups, scrolling, captions
+uv run --project plugins/isodesk/server --extra dev python tests/smoke_lean_scope.py                   # lean listings, scope, measure
+uv run --project plugins/isodesk/server --extra dev pytest tests/test_host_isolation.py -v             # the invariant that matters
 ```
 
 `plugins/isodesk/skills/isodesk/` holds the consuming harness's skill: the
 operating discipline that does not belong in per-tool docstrings. It ships with
 the plugin, so there is no separate copy to mirror.
 
-To change a dependency, edit `server/pyproject.toml`, then regenerate
-`server/requirements.lock` from a fresh venv (`pip install -e plugins/isodesk/server`
-then `pip freeze --exclude-editable`), run the tests against it, and bump the
-plugin version.
+To change a dependency, edit `server/pyproject.toml`, run
+`uv lock --directory plugins/isodesk/server` (it keeps every other locked
+version as it is; `--upgrade-package <name>` moves one on purpose), run the
+tests against it, and bump the plugin version.
 
 `tests/test_host_isolation.py` is the important one: it asserts that session
 input never reaches a host sentinel window, that session windows never appear on

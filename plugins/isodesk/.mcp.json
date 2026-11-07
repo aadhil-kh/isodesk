@@ -1,8 +1,11 @@
 {
   "mcpServers": {
     "isodesk": {
-      "command": "python",
-      "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/launch.py"]
+      "command": "uv",
+      "args": ["run", "--frozen", "--directory", "${CLAUDE_PLUGIN_ROOT}/server", "python", "-m", "isodesk.mcp_server"],
+      "env": {
+        "UV_PROJECT_ENVIRONMENT": "${CLAUDE_PLUGIN_DATA}/venv"
+      }
     }
   }
 }
