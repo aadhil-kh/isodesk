@@ -542,11 +542,27 @@ def _acted(target: int, element, described: Dict[str, Any], act) -> Dict[str, An
             time.sleep(0.05)
             after = read()
 
+    payload = {"hwnd": target, "control": _live_row(target, element, described, after),
+               **outcome}
+    if before:
+        payload["state_before"] = before
+    return payload
+
+
+def _live_row(target: int, element, described: Dict[str, Any],
+              state: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """The listed row with its state, geometry and name as they are now.
+
+    For the same reason as `_acted`'s state: an expander's echo used to carry
+    its collapsed height, and a scroll's echo the rect it had before scrolling.
+    Fields that no longer read (the action navigated away) keep their listed
+    values. `state` is read here unless the caller already has it.
+    """
+    if state is None:
+        state = uia.read_state(element, described.get("control_type"),
+                               described.get("xaml_type"))
     control = {k: v for k, v in described.items() if k not in _STATE_KEYS}
-    control.update(after)
-    # The geometry and name as they are now, for the same reason as the state:
-    # an expander's echo used to carry its collapsed height. Fields that no
-    # longer read (the action navigated away) keep their listed values.
+    control.update(state)
     live = uia.describe(element, described["id"], include_state=False,
                         dpi_scale=dt.dpi_scale_for_window(target))
     for key in ("rect", "rect_dips", "enabled", "visible"):
@@ -554,10 +570,7 @@ def _acted(target: int, element, described: Dict[str, Any], act) -> Dict[str, An
             control[key] = live[key]
     if live.get("name"):
         control["name"] = live["name"]
-    payload = {"hwnd": target, "control": control, **outcome}
-    if before:
-        payload["state_before"] = before
-    return payload
+    return control
 
 
 def h_click_control(state: WorkerState, control_id: str, hwnd: Optional[int] = None,
@@ -626,7 +639,8 @@ def h_expand_control(state: WorkerState, control_id: str, collapse: bool = False
 def h_get_text(state: WorkerState, control_id: str, hwnd: Optional[int] = None,
                listing: Optional[str] = None, **_) -> Dict[str, Any]:
     target, element, described = _element_for(state, hwnd, control_id, listing)
-    return {"hwnd": target, "control": described, "text": actions.get_control_text(element)}
+    return {"hwnd": target, "control": _live_row(target, element, described),
+            "text": actions.get_control_text(element)}
 
 
 def h_scroll_control(state: WorkerState, control_id: str, direction: str = "down",
@@ -634,16 +648,16 @@ def h_scroll_control(state: WorkerState, control_id: str, direction: str = "down
                      to_percent: Optional[float] = None, listing: Optional[str] = None,
                      **_) -> Dict[str, Any]:
     target, element, described = _element_for(state, hwnd, control_id, listing)
-    return {"hwnd": target, "control": described,
-            **actions.scroll_control(element, direction=direction, amount=amount,
-                                     to_percent=to_percent)}
+    outcome = actions.scroll_control(element, direction=direction, amount=amount,
+                                     to_percent=to_percent)
+    return {"hwnd": target, "control": _live_row(target, element, described), **outcome}
 
 
 def h_scroll_to_control(state: WorkerState, control_id: str, hwnd: Optional[int] = None,
                         listing: Optional[str] = None, **_) -> Dict[str, Any]:
     target, element, described = _element_for(state, hwnd, control_id, listing)
-    return {"hwnd": target, "control": described,
-            **actions.scroll_to_control(element)}
+    outcome = actions.scroll_to_control(element)
+    return {"hwnd": target, "control": _live_row(target, element, described), **outcome}
 
 
 CLICK_METHODS = ("auto", "uia", "postmessage")

@@ -581,11 +581,13 @@ def measure(
 
 @mcp.tool
 def audit_accessibility(session_id: str, hwnd: Hwnd = 0) -> Dict[str, Any]:
-    """Find actionable controls with no UIA name and no AutomationId.
+    """Find actionable controls a screen reader cannot announce: no UIA name.
 
-    These are invisible to `get_controls` by default and equally unreachable for
-    a screen reader - typically a WinUI Button whose content is a panel of icon
-    plus text, which derives no name. The fix is `AutomationProperties.Name`.
+    Typically a WinUI Button whose content is an icon, or a panel of icon plus
+    text, which derives no name. Each finding's `issue` is `no_name_or_id`
+    (also invisible to `get_controls` by default) or `no_name` (it has an
+    AutomationId, which automation can use but a screen reader never
+    announces). Either way the fix is `AutomationProperties.Name`.
     """
     return _call(session_id, "audit_accessibility", hwnd=_opt(hwnd))
 

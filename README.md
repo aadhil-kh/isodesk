@@ -136,8 +136,9 @@ the input queue and so cannot receive synthetic keyboard or mouse events.
   (aligned, same width, the gap between them) computed rather than eyeballed
 - DPI-aware geometry: `dpi_scale` and `rect_dips` on every payload, and
   `window_command` sizing in DIPs by default, matching `AdaptiveTrigger`
-- `audit_accessibility`, listing actionable controls with no name and no
-  AutomationId — unreachable for both automation and screen readers
+- `audit_accessibility`, listing actionable controls with no UIA name, which
+  a screen reader cannot announce — whether or not they have an AutomationId,
+  since automation can use one but a screen reader never reads it
 - `module_path` / `module_mtime` on launch, to catch a stale deploy before it is
   mistaken for a change that did not work
 - `click_control`, `set_text`, `toggle_control`, `select_control`,

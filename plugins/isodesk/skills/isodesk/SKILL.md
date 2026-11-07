@@ -138,6 +138,9 @@ scope or filter — do not widen the flags.
 **A control with no name is also a finding.** If you had to pass `include_unnamed` to
 reach a button, screen readers cannot announce it either. Report it as the accessibility
 bug it is — a missing `AutomationProperties.Name` — rather than only working around it.
+The same is true of a row that shows only `#SomeId` and no quoted name: the AutomationId
+gets automation to it, but a screen reader never reads it out. `audit_accessibility`
+reports both kinds, as `issue: no_name_or_id` and `issue: no_name`.
 
 ## Choosing an action verb
 

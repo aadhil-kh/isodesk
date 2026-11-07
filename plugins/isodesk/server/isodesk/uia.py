@@ -1026,12 +1026,21 @@ def _pair_delta(a: Dict[str, Any], b: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def audit_accessibility(hwnd: int) -> Dict[str, Any]:
-    """Find actionable controls with neither a UIA name nor an AutomationId.
+    """Find actionable controls a screen reader cannot announce: no UIA name.
 
     A WinUI Button whose content is a StackPanel of icon + text derives no name,
     so it disappears from the default listing. That reads as an automation
     problem first, but it is an accessibility bug underneath - a screen reader
     hits the same wall, and the fix is the same `AutomationProperties.Name`.
+
+    An AutomationId does not help a screen reader: it is for automation and is
+    never announced. This audit used to skip any control that had one, which on
+    XML Hub hid a dozen nameless icon buttons (SettingsButton, OutputCopyButton
+    and the rest) behind the five that had neither. Both are reported now, told
+    apart by `issue`. Off-screen controls are skipped, since nothing announces
+    them, and so are Custom elements with an AutomationId, which are almost
+    always layout containers (a NavigationView, a UserControl) rather than
+    something a user operates.
     """
     window = get_window(hwnd)
     try:
@@ -1053,24 +1062,35 @@ def audit_accessibility(hwnd: int) -> Dict[str, Any]:
         # an empty label, not a control a user is expected to reach.
         if ctype in ("Text", "Document"):
             continue
-        if _safe(element.window_text, "") or getattr(info, "automation_id", None):
+        if _safe(element.window_text, ""):
+            continue
+        automation_id = getattr(info, "automation_id", None)
+        if automation_id and ctype == "Custom":
+            continue
+        if _safe(element.is_visible) is False:
             continue
         rect = _rect_of(element)
         if not rect or rect["width"] <= 0 or rect["height"] <= 0:
             continue
-        findings.append({
+        finding = {
+            "issue": "no_name" if automation_id else "no_name_or_id",
             "control_type": ctype,
             "xaml_type": xaml_type_of(getattr(info, "class_name", None)),
             "class_name": getattr(info, "class_name", None),
             "rect": rect,
             "rect_dips": _to_dips(rect, scale) if scale else None,
             "fix": "set AutomationProperties.Name on this element",
-        })
+        }
+        if automation_id:
+            finding["automation_id"] = automation_id
+        findings.append(finding)
 
     return {
         "hwnd": hwnd,
         "unnamed_actionable": findings,
         "count": len(findings),
+        "no_name": sum(1 for f in findings if f["issue"] == "no_name"),
+        "no_name_or_id": sum(1 for f in findings if f["issue"] == "no_name_or_id"),
         "total_descendants": len(elements),
         "dpi_scale": scale,
     }

@@ -232,6 +232,8 @@ def scroll_control(
 
         method_name = "ScrollPattern"
 
+    iface = scroll_interface(target)
+    before = scroll_offsets(iface) if iface is not None else {}
     outcome = _try_patterns(target, ((method_name, _do_scroll),))
     # Say which element actually moved: "it scrolled" is a different fact from
     # "the control you named scrolled".
@@ -242,12 +244,45 @@ def scroll_control(
             "control_type": getattr(getattr(target, "element_info", None), "control_type", None),
             "class_name": getattr(getattr(target, "element_info", None), "class_name", None),
         }
-    iface = scroll_interface(target)
     if iface is not None:
-        outcome.update(scroll_offsets(iface))
+        want = percent if to_percent is not None else None
+        outcome.update(_settled_offsets(iface, before, want, vertical))
     if notes:
         outcome["notes"] = notes
     return outcome
+
+
+# How long a scroll's read-back may wait for the scroller to settle.
+_SCROLL_SETTLE = 0.5
+
+
+def _settled_offsets(iface, before: Dict[str, Any], want: Optional[float],
+                     vertical: bool) -> Dict[str, Any]:
+    """The scroller's offsets once the scroll has landed.
+
+    Read straight after the pattern call they were often the position *before*
+    it: `to_percent=30` answered 0 and `to_percent=0` answered 100, while the
+    next listing showed the scroll had happened. The app applies it a moment
+    later, most visibly right after a navigation or a layout change. So this
+    waits until the requested percent is reached, or the offsets have moved
+    and then held still for one read - and gives up after `_SCROLL_SETTLE`,
+    which is what an already-at-the-end scroll costs.
+    """
+    from .uia import scroll_offsets
+
+    key = "vertical_percent" if vertical else "horizontal_percent"
+    deadline = time.time() + _SCROLL_SETTLE
+    previous = None
+    while True:
+        current = scroll_offsets(iface)
+        if want is not None and key in current and abs(current[key] - want) <= 0.5:
+            return current
+        if current != before and current == previous:
+            return current
+        if time.time() >= deadline:
+            return current
+        previous = current
+        time.sleep(0.05)
 
 
 def _rect_dict(element) -> Optional[Dict[str, int]]:
@@ -399,8 +434,16 @@ def _safe_text(element) -> str:
 
 
 def get_control_text(element) -> str:
+    # A control with a ValuePattern answers with its value, even an empty one.
+    # Falling through to the name on "" reported Monaco's empty editor as
+    # holding the text "Editor content".
+    try:
+        value = element.get_value()
+        if value is not None:
+            return value
+    except Exception:
+        pass
     for getter in (
-        lambda: element.get_value(),
         lambda: element.window_text(),
         lambda: element.legacy_properties().get("Value"),
     ):
