@@ -65,8 +65,11 @@ private venv under the host's data directory for the plugin (for Claude Code,
 set pinned in `plugins/isodesk/server/requirements.lock`. That takes about a
 minute, once, which is longer than clients wait for a server to start, so on
 that first start isodesk reports that it is still installing and fails to
-connect. The install carries on in the background; reconnect it a minute later
-(`/mcp` in Claude Code) or start a new session. Later starts reuse the venv,
+connect. The install carries on in the background; a minute later, reconnect it
+by hand (in Claude Code, `/mcp`, select isodesk, **Reconnect**). Starting a new
+session is not enough: Claude Code skips a plugin server for 15 minutes after it
+fails to connect, so pre-building with `--prepare` (below) avoids the wait
+entirely. Later starts reuse the venv,
 plugin updates that only change
 isodesk's code reuse it too, and a change to the lock file or to the system
 Python builds a new one. To build it ahead of time, or to see install errors

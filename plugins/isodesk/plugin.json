@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "isodesk",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Drive Windows GUI apps (WinUI 3, WPF, WinForms) in an isolated desktop session through UI Automation, without touching your own desktop: the isodesk MCP server plus the skill that tells the agent how to use it.",
   "author": {
     "name": "Aadhil"

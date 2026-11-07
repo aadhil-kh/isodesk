@@ -229,8 +229,9 @@ def main() -> int:
             time.sleep(0.5)
         if not is_ready(venv):
             log("isodesk is still installing its dependencies (first run, about a minute). "
-                "The install carries on in the background: reconnect isodesk in a minute "
-                "(/mcp in Claude Code) or start a new session. Progress and errors: "
+                "The install carries on in the background: in a minute, reconnect isodesk "
+                "by hand (Claude Code: /mcp, select isodesk, Reconnect). A new session does "
+                "not retry it until 15 minutes after this failure. Progress and errors: "
                 f"{os.path.join(base, 'install.log')}; to install in the foreground, run "
                 f"python \"{os.path.abspath(__file__)}\" --prepare")
             return 1
