@@ -99,7 +99,7 @@ class Session:
 
         if self.client:
             try:
-                self.client.call("shutdown")
+                killed = list(self.client.call("shutdown").get("reaped") or [])
             except Exception:
                 pass  # the worker may already be gone; the kill sweep covers it
             self.client.close()
@@ -107,7 +107,7 @@ class Session:
 
         if self.hdesk:
             try:
-                killed = pr.kill_desktop_processes(
+                killed += pr.kill_desktop_processes(
                     self.hdesk,
                     dt.current_thread_desktop(),
                     extra_pids={self.worker_pid} if self.worker_pid else None,

@@ -186,6 +186,11 @@ in behind the same MCP surface.
   the session's. Teardown never kills a process that owns any window on the host
   desktop, so your app will not be closed out from under you, but the session may
   not get its own instance.
+- **UWP apps cannot be isolated.** A UWP app that uses a CoreWindow, such as
+  Calculator, is framed by ApplicationFrameHost on your desktop, whichever
+  desktop activated it. `session_activate_app` detects this, closes the
+  instance it started and says so, rather than leaving it open in front of you.
+  WinUI 3, WPF and WinForms apps are unaffected.
 - **`session_show` deliberately breaks isolation.** It switches the physical
   display to the session's desktop; `session_hide` switches back.
 - This relies on compositing behaviour Microsoft does not document. Re-run

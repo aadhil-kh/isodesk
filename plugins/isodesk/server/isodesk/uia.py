@@ -260,6 +260,66 @@ def get_window(hwnd: int):
         raise UiaError(f"cannot bind to window {hwnd}: {exc}") from exc
 
 
+# A cap on one walk, far above any real window, so a tree that keeps producing
+# new elements cannot hold the worker forever.
+_MAX_WALK = 20000
+
+
+def _runtime_id(raw) -> Optional[tuple]:
+    try:
+        return tuple(raw.GetRuntimeId() or ()) or None
+    except Exception:
+        return None
+
+
+def _raw_children(walker, raw) -> List[Any]:
+    children = []
+    try:
+        child = walker.GetFirstChildElement(raw)
+        while child:
+            children.append(child)
+            child = walker.GetNextSiblingElement(child)
+    except Exception:
+        pass
+    return children
+
+
+def descendants(element) -> List[Any]:
+    """Every element under `element`, in tree order, each exactly once.
+
+    pywinauto's own `descendants()` is UIA FindAll, and FindAll does not survive
+    a cycle in the tree. WebView2 creates one: the Chromium window's subtree
+    leads back to its own host. On XML Hub, with two Monaco editors, FindAll
+    returned 3,125 elements of which 62 were distinct - the same 13 controls
+    repeated up to the listing cap - and it never reached the WinUI toolbar or
+    status bar at all. It also took 2.7s.
+
+    This walks the control view, which is the view FindAll was returning (the
+    WinUI Gallery gives the same 233 elements either way), and never enters an
+    element twice, keyed on RuntimeId. On XML Hub it reaches all 104 elements in
+    0.2s; on the Gallery it is a little faster than FindAll.
+    """
+    from pywinauto.controls.uiawrapper import UIAWrapper
+    from pywinauto.uia_defines import IUIA
+    from pywinauto.uia_element_info import UIAElementInfo
+
+    walker = IUIA().iuia.ControlViewWalker
+    root = element.element_info.element
+    seen = {_runtime_id(root)}
+    found: List[Any] = []
+    stack = list(reversed(_raw_children(walker, root)))
+    while stack and len(found) < _MAX_WALK:
+        raw = stack.pop()
+        key = _runtime_id(raw)
+        if key is not None:
+            if key in seen:
+                continue
+            seen.add(key)
+        found.append(UIAWrapper(UIAElementInfo(raw)))
+        stack.extend(reversed(_raw_children(walker, raw)))
+    return found
+
+
 def _rect_of(element) -> Optional[Dict[str, int]]:
     try:
         r = element.rectangle()
@@ -344,7 +404,7 @@ def resolve_scope(hwnd: int, scope: str, controls: List[Dict[str, Any]]):
         attribute = "automation_id" if key == "aid" else "name"
         window = get_window(hwnd)
         matches = []
-        for element in window.descendants():
+        for element in descendants(window):
             info = getattr(element, "element_info", None)
             actual = (
                 getattr(info, "automation_id", None) if attribute == "automation_id"
@@ -437,7 +497,7 @@ def list_controls(
     """
     window = get_window(hwnd)
     try:
-        descendants = (root or window).descendants()
+        elements = descendants(root or window)
     except Exception as exc:
         raise UiaError(f"cannot enumerate controls of {hwnd}: {exc}") from exc
 
@@ -448,7 +508,7 @@ def list_controls(
 
     matched: List[Dict[str, Any]] = []
     viewports: List[Dict[str, Any]] = []
-    for element in descendants:
+    for element in elements:
         info = getattr(element, "element_info", None)
         ctype = getattr(info, "control_type", None)
         xtype = xaml_type_of(getattr(info, "class_name", None))
@@ -502,7 +562,7 @@ def list_controls(
         "controls": controls,
         "count": len(controls),
         "total_matched": len(matched),
-        "total_descendants": len(descendants),
+        "total_descendants": len(elements),
         "truncated": len(matched) > len(controls),
         "dpi_scale": scale,
     }
@@ -700,7 +760,7 @@ def resolve_control(hwnd: int, control_id: str, controls: List[Dict[str, Any]]):
         )
 
     window = get_window(hwnd)
-    for element in window.descendants():
+    for element in descendants(window):
         info = getattr(element, "element_info", None)
         if (
             _safe(element.window_text, "") == target["name"]
@@ -756,12 +816,12 @@ def refresh_controls(
     scale = dpi_scale_for_window(hwnd)
     window = get_window(hwnd)
     try:
-        descendants = window.descendants()
+        elements = descendants(window)
     except Exception as exc:
         raise UiaError(f"cannot enumerate controls of {hwnd}: {exc}") from exc
 
     index: Dict[tuple, Any] = {}
-    for element in descendants:
+    for element in elements:
         index.setdefault(_identity(element), element)
 
     rows: List[Dict[str, Any]] = []
@@ -907,7 +967,7 @@ def audit_accessibility(hwnd: int) -> Dict[str, Any]:
     """
     window = get_window(hwnd)
     try:
-        descendants = window.descendants()
+        elements = descendants(window)
     except Exception as exc:
         raise UiaError(f"cannot enumerate controls of {hwnd}: {exc}") from exc
 
@@ -916,7 +976,7 @@ def audit_accessibility(hwnd: int) -> Dict[str, Any]:
     scale = dpi_scale_for_window(hwnd)
     findings: List[Dict[str, Any]] = []
 
-    for element in descendants:
+    for element in elements:
         info = getattr(element, "element_info", None)
         ctype = getattr(info, "control_type", None)
         if ctype not in ACTIONABLE_TYPES:
@@ -943,7 +1003,7 @@ def audit_accessibility(hwnd: int) -> Dict[str, Any]:
         "hwnd": hwnd,
         "unnamed_actionable": findings,
         "count": len(findings),
-        "total_descendants": len(descendants),
+        "total_descendants": len(elements),
         "dpi_scale": scale,
     }
 
@@ -952,10 +1012,18 @@ def control_tree(hwnd: int, max_depth: int = 6, max_nodes: int = 400) -> Dict[st
     """Nested structural view, for when flat lists lose the layout relationships."""
     window = get_window(hwnd)
     counter = {"n": 0}
+    # The same cycle `descendants` guards against: without this, a WebView2
+    # host's subtree repeats inside itself until max_depth.
+    seen = set()
 
     def walk(element, depth: int) -> Optional[Dict[str, Any]]:
         if depth > max_depth or counter["n"] >= max_nodes:
             return None
+        key = _runtime_id(element.element_info.element)
+        if key is not None:
+            if key in seen:
+                return None
+            seen.add(key)
         counter["n"] += 1
         info = getattr(element, "element_info", None)
         node = {

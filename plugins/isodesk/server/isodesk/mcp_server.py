@@ -346,6 +346,10 @@ def session_activate_app(
     The response includes `module`, with the running binary's path and mtime plus
     the package's `install_location`. Compare the mtime against your build to
     catch a stale deploy before it is mistaken for a change that did not work.
+
+    WinUI 3 and other desktop MSIX apps open in the session. UWP apps that use a
+    CoreWindow (Calculator, for one) cannot: Windows frames them on the user's
+    desktop. That case is refused, and an instance this call started is closed.
     """
     return _call(session_id, "activate", aumid=aumid, arguments=arguments, wait=wait_seconds)
 

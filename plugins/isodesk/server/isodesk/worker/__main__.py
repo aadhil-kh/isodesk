@@ -110,15 +110,62 @@ def h_activate(state: WorkerState, aumid: str, arguments: str = "",
     desktop.
     """
     before = {w["hwnd"] for w in dt.app_windows(state.hdesk)}
+    running = pr.running_pids()
     pid = pr.activate_packaged_app(aumid, arguments)
-    state.launched_pids.append(pid)
     new = _wait_for_new_window(state, before, wait)
+    if not new and _owns_host_windows(pid):
+        _refuse_escaped(aumid, pid, started=pid not in running)
+    state.launched_pids.append(pid)
     return {
         "pid": pid,
         "aumid": aumid,
         "new_windows": new,
         "module": pr.module_info(new[0]["pid"] if new else pid),
     }
+
+
+def _owns_host_windows(pid: int) -> bool:
+    """Does this process own any window on the user's Default desktop?"""
+    hdesk = None
+    try:
+        hdesk = dt.open_desktop("Default")
+        return any(
+            w["pid"] == pid for w in dt.enum_desktop_windows(hdesk, visible_only=False)
+        )
+    except Exception:
+        return False
+    finally:
+        if hdesk:
+            try:
+                dt.close_desktop(hdesk)
+            except Exception:
+                pass
+
+
+def _refuse_escaped(aumid: str, pid: int, started: bool) -> None:
+    """An activation that landed on the user's desktop instead of this one.
+
+    Observed with Calculator, a UWP (CoreWindow) app: its window is framed by
+    ApplicationFrameHost, one shared process on the user's desktop, so it opens
+    there whichever desktop asked. Nothing appeared in the session, and teardown
+    could not close it either - its process owns windows on the host desktop,
+    which is exactly what the never-kill-the-user's-apps rule keys on - so it
+    was left running in front of the user. The same shape covers a
+    single-instance app handing off to a copy already running there.
+
+    An instance this activation started is closed again, since it is ours and is
+    in the way. One that was already running is the user's and is left alone.
+    """
+    closed = started and pr.kill_process_tree(pid)
+    raise RuntimeError(
+        f"{aumid} opened on the user's desktop, not this session's (pid {pid}). "
+        "UWP apps that use a CoreWindow, such as Calculator, are framed by "
+        "ApplicationFrameHost on the user's desktop and cannot be isolated; a "
+        "single-instance app may also hand off to a copy already running there. "
+        + ("isodesk closed the instance it started." if closed else
+           "It was already running before this call, so it was left alone."
+           if not started else "isodesk could not close it; it is still open.")
+    )
 
 
 def _wait_for_new_window(state: WorkerState, before: set, timeout: float) -> List[Dict[str, Any]]:
@@ -464,6 +511,43 @@ def _element_for(state: WorkerState, hwnd: Optional[int], control_id: str,
     return target, element, described
 
 
+_STATE_KEYS = ("toggle_state", "selected", "expanded", "value")
+
+# How long to wait for a pattern call's state change to become readable. Only
+# spent when the state reads back unchanged, which is either an action that
+# genuinely changed nothing or an app that applies it a moment later.
+_STATE_SETTLE = 0.5
+
+
+def _acted(target: int, element, described: Dict[str, Any], act) -> Dict[str, Any]:
+    """Run a UIA action and echo the control with the state it left behind.
+
+    `described` is the row cached when the window was last listed, so its state
+    is the state at listing time - neither before nor after this action. Echoing
+    it made two toggles in a row both report `off`, one of them wrongly. The state
+    is read live on both sides instead, and the echoed row carries the after.
+    """
+    def read() -> Dict[str, Any]:
+        return uia.read_state(element, described.get("control_type"),
+                              described.get("xaml_type"))
+
+    before = read()
+    outcome = act()
+    after = read()
+    if before:
+        deadline = time.time() + _STATE_SETTLE
+        while after == before and time.time() < deadline:
+            time.sleep(0.05)
+            after = read()
+
+    control = {k: v for k, v in described.items() if k not in _STATE_KEYS}
+    control.update(after)
+    payload = {"hwnd": target, "control": control, **outcome}
+    if before:
+        payload["state_before"] = before
+    return payload
+
+
 def h_click_control(state: WorkerState, control_id: str, hwnd: Optional[int] = None,
                     listing: Optional[str] = None, **_) -> Dict[str, Any]:
     target, element, described = _element_for(state, hwnd, control_id, listing)
@@ -472,36 +556,35 @@ def h_click_control(state: WorkerState, control_id: str, hwnd: Optional[int] = N
             f"{described['name']!r} is a window caption button; invoking it would "
             "hide or close the window. Use window_command instead if intended."
         )
-    outcome = actions.invoke_control(element)
-    return {"hwnd": target, "control": described, **outcome}
+    return _acted(target, element, described, lambda: actions.invoke_control(element))
 
 
 def h_set_text(state: WorkerState, control_id: str, text: str,
                hwnd: Optional[int] = None, clear: bool = True,
                listing: Optional[str] = None, **_) -> Dict[str, Any]:
     target, element, described = _element_for(state, hwnd, control_id, listing)
-    outcome = actions.set_control_text(element, text, clear=clear)
-    return {"hwnd": target, "control": described, **outcome}
+    return _acted(target, element, described,
+                  lambda: actions.set_control_text(element, text, clear=clear))
 
 
 def h_toggle_control(state: WorkerState, control_id: str, hwnd: Optional[int] = None,
                      listing: Optional[str] = None, **_) -> Dict[str, Any]:
     target, element, described = _element_for(state, hwnd, control_id, listing)
-    return {"hwnd": target, "control": described, **actions.toggle_control(element)}
+    return _acted(target, element, described, lambda: actions.toggle_control(element))
 
 
 def h_select_control(state: WorkerState, control_id: str, hwnd: Optional[int] = None,
                      listing: Optional[str] = None, **_) -> Dict[str, Any]:
     target, element, described = _element_for(state, hwnd, control_id, listing)
-    return {"hwnd": target, "control": described, **actions.select_control(element)}
+    return _acted(target, element, described, lambda: actions.select_control(element))
 
 
 def h_expand_control(state: WorkerState, control_id: str, collapse: bool = False,
                      hwnd: Optional[int] = None, listing: Optional[str] = None,
                      **_) -> Dict[str, Any]:
     target, element, described = _element_for(state, hwnd, control_id, listing)
-    return {"hwnd": target, "control": described,
-            **actions.expand_control(element, collapse=collapse)}
+    return _acted(target, element, described,
+                  lambda: actions.expand_control(element, collapse=collapse))
 
 
 def h_get_text(state: WorkerState, control_id: str, hwnd: Optional[int] = None,
@@ -697,7 +780,11 @@ def h_run(state: WorkerState, cmdline: str, timeout: float = 60.0,
 
 
 def h_shutdown(state: WorkerState, **_) -> Dict[str, Any]:
-    return {"stopping": True}
+    # Reaped here rather than only on the way out, so the host can report these
+    # pids: otherwise `killed_pids` named only what its own sweep found left.
+    reaped = _reap_launched(state)
+    state.launched_pids.clear()
+    return {"stopping": True, "reaped": reaped}
 
 
 HANDLERS: Dict[str, Callable[..., Dict[str, Any]]] = {

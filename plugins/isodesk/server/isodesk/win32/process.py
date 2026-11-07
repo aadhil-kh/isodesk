@@ -87,6 +87,16 @@ def activate_packaged_app(aumid: str, arguments: str = "") -> int:
         raise LaunchError(f"ActivateApplication({aumid!r}): {exc}") from exc
 
 
+def running_pids() -> Set[int]:
+    """Every process id running now.
+
+    Taken before an activation, it tells a process the activation started from
+    one it merely reached: ActivateApplication returns the pid of an instance
+    that was already running, and that one is the user's.
+    """
+    return set(win32process.EnumProcesses())
+
+
 def resolve_aumid(name_fragment: str) -> List[Dict[str, str]]:
     """Look up AUMIDs of installed packaged apps matching a fragment.
 

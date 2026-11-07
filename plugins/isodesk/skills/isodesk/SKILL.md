@@ -165,7 +165,9 @@ answer means the listing genuinely has to be taken again.
 changes things *below* your next target leaves that target's id valid. Collapsing several
 expanded groups is therefore cheapest bottom-up: collapse the last group first and the ids
 above it still hold. Every action response echoes back the control it resolved — check that
-name is the one you meant, and you have the confirmation that makes this safe.
+name is the one you meant, and you have the confirmation that makes this safe. The echoed
+row carries the control's state as read *after* the action, with `state_before` beside it,
+so a toggle or an expand needs no follow-up `refresh_controls` to confirm.
 
 ## Dead ends — things that cannot be driven at all
 
@@ -377,3 +379,4 @@ you hit this, read `references/deploy-refresh.md` for the full recipe.
 | A build or file copy blocks for minutes | An app is holding the binaries — a live session, or an orphaned desktop from a dead host. `session_list(include_orphans=true)` then `session_reap`. |
 | `set_text` did not stick | Id went stale between listing and call, or the result came from `type_keys`. Re-list, re-set, re-read. |
 | A second launch attaches to an existing instance | Single-instance app (e.g. Windows 11 Notepad) handed off to a copy on the host desktop. Teardown will not kill it — that is deliberate. |
+| `session_activate_app` says the app "opened on the user's desktop" | A UWP app with a CoreWindow (e.g. Calculator): Windows frames it in ApplicationFrameHost on the user's desktop, so it cannot be isolated. The instance the call started was closed again. Use `winapp ui` for it. |
