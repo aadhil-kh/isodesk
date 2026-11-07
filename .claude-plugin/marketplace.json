@@ -1,0 +1,15 @@
+{
+  "name": "isodesk",
+  "description": "isodesk: isolated Windows desktop sessions for GUI automation from Claude Code.",
+  "owner": {
+    "name": "Aadhil"
+  },
+  "plugins": [
+    {
+      "name": "isodesk",
+      "source": "./plugins/isodesk",
+      "description": "Drive Windows GUI apps in an isolated desktop session through UI Automation: MCP server plus skill. Windows only; needs Python 3.10+ on PATH.",
+      "category": "development"
+    }
+  ]
+}

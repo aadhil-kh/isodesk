@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "isodesk"
+version = "0.1.0"
+description = "Isolated Windows desktop sessions for GUI automation, exposed as an MCP server"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+
+# Deliberately small: no agent framework and no LLM client, because the calling
+# model is the agent. None of that is needed to move a mouse that does not exist.
+dependencies = [
+    "pywin32>=306",
+    "pywinauto>=0.6.8",
+    "comtypes>=1.2.0",
+    "Pillow>=10.0",
+    "fastmcp>=2.0",
+    "pydantic>=2.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+isodesk-mcp = "isodesk.mcp_server:main"
+
+[tool.setuptools.packages.find]
+include = ["isodesk*"]

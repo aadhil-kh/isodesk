@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "isodesk": {
+      "command": "python",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/launch.py"]
+    }
+  }
+}

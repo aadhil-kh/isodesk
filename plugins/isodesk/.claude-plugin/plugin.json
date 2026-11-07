@@ -1,0 +1,12 @@
+{
+  "name": "isodesk",
+  "displayName": "isodesk",
+  "version": "0.1.0",
+  "description": "Drive Windows GUI apps (WinUI 3, WPF, WinForms) in an isolated desktop session through UI Automation, without touching your own desktop: the isodesk MCP server plus the skill that tells Claude how to use it.",
+  "author": {
+    "name": "Aadhil"
+  },
+  "repository": "https://github.com/aadhil-kh/isodesk",
+  "license": "MIT",
+  "keywords": ["windows", "winui", "wpf", "winforms", "ui-automation", "testing", "mcp"]
+}

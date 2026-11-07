@@ -1,0 +1,8 @@
+# Git stores LF and checks out LF on every platform, overriding the
+# core.autocrlf=true that the Git for Windows installer sets system-wide.
+# Without this, whichever tool last wrote a file decides its endings, and the
+# tree drifts into a mix that buries real changes in whole-file diffs.
+* text=auto eol=lf
+
+*.png binary
+*.ico binary
